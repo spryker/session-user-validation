@@ -5,25 +5,18 @@
  * Use of this software requires acceptance of the Evaluation License Agreement. See LICENSE file.
  */
 
-namespace Spryker\Zed\SessionUserValidation\Communication\Plugin\Security;
+namespace Spryker\Zed\SessionUserValidation\Communication\Extender;
 
 use Spryker\Service\Container\ContainerInterface;
 use Spryker\Shared\SecurityExtension\Configuration\SecurityBuilderInterface;
-use Spryker\Shared\SecurityExtension\Dependency\Plugin\SecurityPluginInterface;
-use Spryker\Zed\Kernel\Communication\AbstractPlugin;
-use Spryker\Zed\SessionUserValidation\Communication\Extender\SecurityServiceExtenderInterface;
+use Spryker\Zed\SessionUserValidation\Communication\FirewallListener\ValidateSessionUserListener;
+use Spryker\Zed\SessionUserValidation\Dependency\Facade\SessionUserValidationToUserFacadeInterface;
+use Spryker\Zed\SessionUserValidationExtension\Dependency\Plugin\SessionUserValidatorPluginInterface;
+use Symfony\Component\Security\Http\Firewall\FirewallListenerInterface;
 
-/**
- * @deprecated Use {@link \Spryker\Zed\SessionUserValidation\Communication\Plugin\Security\ZedValidateSessionUserSecurityPlugin} instead.
- *
- * @method \Spryker\Zed\SessionUserValidation\Communication\SessionUserValidationCommunicationFactory getFactory()
- * @method \Spryker\Zed\SessionUserValidation\SessionUserValidationConfig getConfig()
- */
-class ValidateSessionUserSecurityPlugin extends AbstractPlugin implements SecurityPluginInterface, SecurityServiceExtenderInterface
+class SecurityServiceExtender implements SecurityServiceExtenderInterface
 {
     /**
-     * @uses \Spryker\Zed\Security\Communication\Plugin\Application\SecurityApplicationPlugin::SERVICE_SECURITY_TOKEN_STORAGE
-     *
      * @var string
      */
     protected const SERVICE_SECURITY_TOKEN_STORAGE = 'security.token_storage';
@@ -38,14 +31,51 @@ class ValidateSessionUserSecurityPlugin extends AbstractPlugin implements Securi
     /**
      * @var string
      */
+    protected const SECURITY_AUTHENTICATION_LISTENER_FACTORY_USER_SESSION_VALIDATOR = 'security.authentication_listener.factory.user_session_validator';
+
+    /**
+     * @var string
+     */
     protected const SECURITY_USER_SESSION_VALIDATOR = 'security.authentication_listener.user_session_validator';
 
     /**
-     * {@inheritDoc}
-     * - Extends security service user session validator listener.
-     *
-     * @api
-     *
+     * @var string
+     */
+    protected const SECURITY_AUTHENTICATION_LISTENER_USER_SESSION_VALIDATOR_PLACEHOLDER = 'security.authentication_listener.%s.user_session_validator';
+
+    /**
+     * @var string
+     */
+    protected const SECURITY_AUTHENTICATION_LISTENER_USER_SESSION_VALIDATOR_PROTO = 'security.authentication_listener.user_session_validator._proto';
+
+    /**
+     * @var string
+     */
+    protected const USER_SESSION_VALIDATOR = 'user_session_validator';
+
+    /**
+     * @var \Spryker\Zed\SessionUserValidation\Dependency\Facade\SessionUserValidationToUserFacadeInterface
+     */
+    protected SessionUserValidationToUserFacadeInterface $userFacade;
+
+    /**
+     * @var \Spryker\Zed\SessionUserValidationExtension\Dependency\Plugin\SessionUserValidatorPluginInterface
+     */
+    protected SessionUserValidatorPluginInterface $sessionUserValidatorPlugin;
+
+    /**
+     * @param \Spryker\Zed\SessionUserValidation\Dependency\Facade\SessionUserValidationToUserFacadeInterface $userFacade
+     * @param \Spryker\Zed\SessionUserValidationExtension\Dependency\Plugin\SessionUserValidatorPluginInterface $sessionUserValidatorPlugin
+     */
+    public function __construct(
+        SessionUserValidationToUserFacadeInterface $userFacade,
+        SessionUserValidatorPluginInterface $sessionUserValidatorPlugin
+    ) {
+        $this->userFacade = $userFacade;
+        $this->sessionUserValidatorPlugin = $sessionUserValidatorPlugin;
+    }
+
+    /**
      * @param \Spryker\Shared\SecurityExtension\Configuration\SecurityBuilderInterface $securityBuilder
      * @param \Spryker\Service\Container\ContainerInterface $container
      *
@@ -74,7 +104,7 @@ class ValidateSessionUserSecurityPlugin extends AbstractPlugin implements Securi
         }
 
         $securityBuilder->addFirewall(static::SECURITY_USER_FIREWALL_NAME, [
-                'user_session_validator' => [
+                static::USER_SESSION_VALIDATOR => [
                     static::SECURITY_USER_SESSION_VALIDATOR,
                 ],
             ] + $userFirewallConfiguration);
@@ -90,22 +120,22 @@ class ValidateSessionUserSecurityPlugin extends AbstractPlugin implements Securi
     protected function addAuthenticationListenerFactory(ContainerInterface $container): ContainerInterface
     {
         $container->set(
-            'security.authentication_listener.factory.user_session_validator',
+            static::SECURITY_AUTHENTICATION_LISTENER_FACTORY_USER_SESSION_VALIDATOR,
             $container->protect(
-                function ($firewallName, $options) use ($container) {
-                    $listenerName = sprintf('security.authentication_listener.%s.user_session_validator', $firewallName);
+                function (string $firewallName, array $options) use ($container): array {
+                    $listenerName = sprintf(static::SECURITY_AUTHENTICATION_LISTENER_USER_SESSION_VALIDATOR_PLACEHOLDER, $firewallName);
+
                     if (!$container->has($listenerName)) {
                         $container->set(
                             $listenerName,
-                            $container->get('security.authentication_listener.user_session_validator._proto')($firewallName),
+                            $container->get(static::SECURITY_AUTHENTICATION_LISTENER_USER_SESSION_VALIDATOR_PROTO)($firewallName),
                         );
                     }
 
                     return [
-                        'security.authentication_provider.' . $firewallName . '.anonymous',
                         $listenerName,
                         null,
-                        'user_session_validator',
+                        static::USER_SESSION_VALIDATOR,
                     ];
                 },
             ),
@@ -121,9 +151,13 @@ class ValidateSessionUserSecurityPlugin extends AbstractPlugin implements Securi
      */
     protected function addAuthenticationListenerPrototype(ContainerInterface $container): ContainerInterface
     {
-        $container->set('security.authentication_listener.user_session_validator._proto', $container->protect(function ($providerKey) use ($container) {
-            return function () use ($container) {
-                return $this->getFactory()->createValidateSessionUserListener($container->get(static::SERVICE_SECURITY_TOKEN_STORAGE));
+        $container->set(static::SECURITY_AUTHENTICATION_LISTENER_USER_SESSION_VALIDATOR_PROTO, $container->protect(function (string $firewallName) use ($container): callable {
+            return function () use ($container): FirewallListenerInterface {
+                return new ValidateSessionUserListener(
+                    $container->get(static::SERVICE_SECURITY_TOKEN_STORAGE),
+                    $this->userFacade,
+                    $this->sessionUserValidatorPlugin,
+                );
             };
         }));
 
